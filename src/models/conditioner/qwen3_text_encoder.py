@@ -1,3 +1,6 @@
+import os
+import time
+import fcntl
 import torch
 import torch.nn as nn
 from src.models.conditioner.base import BaseConditioner
@@ -5,17 +8,39 @@ from src.models.conditioner.base import BaseConditioner
 from transformers import Qwen3Model, Qwen2Tokenizer
 
 
+def _ensure_downloaded(weight_path: str):
+    """Use a file lock so only one process downloads to shared EFS; others wait."""
+    cache_dir = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+    os.makedirs(cache_dir, exist_ok=True)
+    lock_path = os.path.join(cache_dir, "download.lock")
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+    with open(lock_path, "w") as lock_file:
+        print(f"[rank {local_rank}] acquiring download lock for {weight_path}...", flush=True)
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            print(f"[rank {local_rank}] lock acquired, loading {weight_path}", flush=True)
+            tokenizer = Qwen2Tokenizer.from_pretrained(weight_path)
+            model = Qwen3Model.from_pretrained(weight_path)
+            print(f"[rank {local_rank}] model loaded successfully", flush=True)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    return tokenizer, model
+
+
 class Qwen3TextEncoder(BaseConditioner):
     def __init__(self, weight_path: str, embed_dim:int=None, max_length=128):
         super().__init__()
-        self.tokenizer = Qwen2Tokenizer.from_pretrained(weight_path, max_length=max_length, padding_side="right")
-        # self.model = Qwen3Model.from_pretrained(weight_path, attn_implementation="flex_attention").to(torch.bfloat16)
-        self.model = Qwen3Model.from_pretrained(weight_path).to(torch.bfloat16)
+        tokenizer, model = _ensure_downloaded(weight_path)
+        self.tokenizer = tokenizer
+        self.tokenizer.model_max_length = max_length
+        self.tokenizer.padding_side = "right"
+        self.model = model.to(torch.bfloat16)
         self.model.compile()
         self.uncondition_embedding = None
         self.embed_dim = embed_dim
         self.max_length = max_length
-        # torch._dynamo.config.optimize_ddp = False
 
     def _impl_condition(self, y, metadata:dict={}):
         tokenized = self.tokenizer(y, truncation=True, max_length=self.max_length, padding="max_length", return_tensors="pt")

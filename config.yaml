@@ -136,7 +136,7 @@ model:
       encoder:
         class_path: src.models.encoder.DINOv2
         init_args:
-          weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
+          weight_path: s3://core-cn-oss.canva.com/usr/alexxu/pixelgen/dinov2/checkpoints/dinov2_vitb14_pretrain.pth
           base_patch_size: 16
       loss_weight_fn: src.diffusion.flow_matching.training_self_flow_JiT_LPIPS_DINO_HardGate.constant
       lognorm_t: true
@@ -203,9 +203,7 @@ data:
     class_path: src.data.dataset.blip3o_dataset.WebDatasetPackedDataset
     init_args:
       urls:
-      - /mnt/ephemeral/blip_dataset/BLIP3o-Pretrain-Long-Caption
-      - /mnt/ephemeral/blip_dataset/BLIP3o-Pretrain-Short-Caption
-      - /mnt/ephemeral/blip_dataset/BLIP3o-Pretrain-JourneyDB
+      - /mnt/ephemeral/blip_dataset/BLIP3o-60k
       resolution: 256
       random_crop: false
       shuffle_buffer: 1000
@@ -238,5 +236,5 @@ data:
   pred_num_workers: 1
 tags:
   exp: pretraining_pix256_selfflow
-ckpt_path: ./universal_pix_t2i_workdirs/exp_pretraining_pix256_selfflow/epoch=0-step=180000.ckpt
+ckpt_path: null
 weights_only: null

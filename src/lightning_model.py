@@ -130,15 +130,23 @@ class LightningModel(pl.LightningModule):
                     pass
 
     def training_step(self, batch, batch_idx):
+        if batch_idx % 50 == 0 and self.global_rank == 0:
+            import time
+            print(f"[step {self.global_step}] training_step batch_idx={batch_idx} t={time.strftime('%H:%M:%S')}", flush=True)
         x, y, metadata = batch
         if metadata is None:
             metadata = {}
         metadata['global_step'] = self.global_step
         with torch.no_grad():
             x = self.vae.encode(x)
+            if batch_idx == 0 and self.global_rank == 0:
+                print(f"[step {self.global_step}] vae.encode done, starting conditioner...", flush=True)
             condition, uncondition = self.conditioner(y, metadata)
+            if batch_idx == 0 and self.global_rank == 0:
+                print(f"[step {self.global_step}] conditioner done, starting diffusion_trainer...", flush=True)
         loss = self.diffusion_trainer(self.denoiser, self.ema_denoiser, self.diffusion_sampler, x, condition, uncondition, metadata)
-        # to be do! fix the bug in tqdm iteration when enabling accumulate_grad_batches>1
+        if batch_idx == 0 and self.global_rank == 0:
+            print(f"[step {self.global_step}] first step complete! loss={loss['loss'].item():.4f}", flush=True)
         self.log_dict(loss, prog_bar=True, on_step=True, sync_dist=False)
         return loss["loss"]
 

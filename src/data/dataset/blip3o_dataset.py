@@ -8,7 +8,8 @@ import torch
 # Use filesystem instead of /dev/shm for multiprocessing (avoids bus error in DataLoader workers).
 # Must run as soon as torch is imported in the worker, before any tensor sharing.
 try:
-    torch.multiprocessing.set_sharing_strategy("file_system")
+    # torch.multiprocessing.set_sharing_strategy("file_system")
+    torch.multiprocessing.set_sharing_strategy("file_descriptor")
 except RuntimeError:
     pass  # already set in this process
 
@@ -23,6 +24,29 @@ from torchvision.transforms import Normalize
 from torchvision.transforms.functional import to_tensor
 import copy
 import functools
+import re
+
+
+def _list_s3_tar_files(s3_url: str) -> List[str]:
+    """List .tar / .tar.gz files under an S3 prefix using boto3."""
+    import boto3
+    m = re.match(r"s3://([^/]+)/?(.*)", s3_url)
+    if not m:
+        return []
+    bucket, prefix = m.group(1), m.group(2)
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+
+    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    s3 = boto3.client("s3", region_name=region)
+    tar_files = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith(".tar") or key.endswith(".tar.gz"):
+                tar_files.append(f"s3://{bucket}/{key}")
+    return tar_files
 
 def resize(pil_image, image_size=256):
     while min(*pil_image.size) >= 2 * image_size:
@@ -183,15 +207,22 @@ class WebDatasetPackedDataset(IterableDataset):
         
         tar_files = []
         for url in urls:
-            tar_files.extend(glob.glob(os.path.join(url, "**/*.tar"), recursive=True))
-            tar_files.extend(glob.glob(os.path.join(url, "**/*.tar.gz"), recursive=True))
+            if url.startswith("s3://"):
+                tar_files.extend(_list_s3_tar_files(url))
+            else:
+                tar_files.extend(glob.glob(os.path.join(url, "**/*.tar"), recursive=True))
+                tar_files.extend(glob.glob(os.path.join(url, "**/*.tar.gz"), recursive=True))
         num_tars = len(tar_files)   
         if num_tars == 0:
             raise ValueError(f"No tar files found. Please check your URLs/patterns: {urls}")
             
         print(f"INFO: Found {num_tars} tar files to stream from.")
         
-        self.urls = tar_files
+        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        self.urls = [
+            f"pipe:aws s3 cp {f} - --region {region}" if f.startswith("s3://") else f
+            for f in tar_files
+        ]
 
         self.resolution = resolution
         self.normalize = Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
@@ -298,8 +329,14 @@ class WebDatasetPackedDataset(IterableDataset):
 
         # Create a unique pipeline for each worker
         pipeline = self._make_pipeline(worker_id, num_workers)
+        if worker_id == 0:
+            print(f"[DataLoader] worker {worker_id}/{num_workers} starting iteration over pipeline...", flush=True)
 
+        _yield_count = 0
         for sample in pipeline:
+            if worker_id == 0 and _yield_count == 0:
+                print(f"[DataLoader] worker 0 got first sample from pipeline!", flush=True)
+            _yield_count += 1
             try:
                 pil_image = self._extract_image_from_sample(sample)
                 if pil_image is None:

@@ -4,7 +4,9 @@ import time
 from typing import Any, Union
 
 # Use filesystem for multiprocessing tensor sharing when /dev/shm is too small.
-torch.multiprocessing.set_sharing_strategy("file_system")
+# torch.multiprocessing.set_sharing_strategy("file_system")
+
+torch.multiprocessing.set_sharing_strategy("file_descriptor")
 
 from src.utils.patch_bugs import *
 from lightning import Trainer, LightningModule
@@ -86,7 +88,14 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
 
-    cli = ReWriteRootDirCli(LightningModel, DataModule,
-                            auto_configure_optimizers=False,
-                            save_config_callback=ReWriteRootSaveConfigCallback,
-                            save_config_kwargs={"overwrite": True})
+    try:
+        cli = ReWriteRootDirCli(LightningModel, DataModule,
+                                auto_configure_optimizers=False,
+                                save_config_callback=ReWriteRootSaveConfigCallback,
+                                save_config_kwargs={"overwrite": True})
+    except Exception as e:
+        import sys, signal
+        rank = os.environ.get("LOCAL_RANK", os.environ.get("RANK", "?"))
+        print(f"\n[rank {rank}] FATAL: {type(e).__name__}: {e}", flush=True)
+        os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
+        sys.exit(1)
