@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-IMAGE_NAME="pixelgen-selfflow-local"
+IMAGE_NAME="ds-core-cn-omra-trainer:local"
 
 echo "=== Building Docker image ==="
-docker build -t "${IMAGE_NAME}" .
+docker build -t "${IMAGE_NAME}" -f Dockerfile .
 
 echo "=== Running training container ==="
 docker run --rm -it \
