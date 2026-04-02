@@ -1,0 +1,135 @@
+# Debug JobSet — launches a pod with sleep so you can exec in and debug.
+#
+# Usage:
+#   arnold submit -f jobset_debug.yaml --job-name "pixelgen-debug-$RANDOM"
+#   arnold exec <job-name> -- bash
+
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: ${arnold_job_name}
+  labels:
+    kueue.x-k8s.io/queue-name: ${arnold_application_id}-default-queue
+    app.canva.k8s/application-id: ${arnold_application_id}
+spec:
+  ttlSecondsAfterFinished: 3600
+  successPolicy:
+    operator: All
+    targetReplicatedJobs: [workers]
+  failurePolicy:
+    maxRestarts: 0
+    rules:
+    - action: FailJobSet
+      targetReplicatedJobs: [workers]
+  replicatedJobs:
+  - name: workers
+    replicas: 1
+    template:
+      spec:
+        completionMode: Indexed
+        completions: 1
+        parallelism: 1
+        backoffLimit: 0
+        template:
+          spec:
+            runtimeClassName: nvidia
+            serviceAccountName: ${arnold_application_id}-model-trainer
+            restartPolicy: Never
+            subdomain: ${arnold_job_name}
+            volumes:
+            - name: shared-storage
+              persistentVolumeClaim:
+                claimName: pvc-efs-${arnold_application_id}-anyscale
+            - name: shared-memory
+              emptyDir:
+                medium: Memory
+                sizeLimit: 1024Gi
+            - name: canva-cloud-tls
+              secret:
+                secretName: ${arnold_application_id}-model-trainer-tls
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: karpenter.sh/capacity-type
+                      operator: In
+                      values:
+                      - reserved
+                    - key: node.canva.k8s/dedicated
+                      operator: In
+                      values:
+                      - ${ARNOLD_NODEPOOL_NAME,ai-efa-accelerated}
+                    - key: karpenter.k8s.aws/instance-gpu-name
+                      operator: In
+                      values:
+                      - h200
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app.canva.k8s/component-type: ml-trainer
+            tolerations:
+            - effect: NoSchedule
+              key: dedicated
+              operator: Equal
+              value: ${ARNOLD_NODEPOOL_NAME,ai-efa-accelerated}
+            containers:
+            - name: trainer
+              image: ${arnold_docker_build:ds-core-cn-omra-trainer,.,Dockerfile,deploy_core-cn-readwrite}
+              env:
+              - name: PYTHONPATH
+                value: /app
+              - name: AWS_DEFAULT_REGION
+                value: us-east-1
+              - name: AWS_REGION
+                value: us-east-1
+              - name: CANVA_POD_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
+              resources:
+                requests:
+                  cpu: "154"
+                  memory: 1638Gi
+                  nvidia.com/gpu: "8"
+                  vpc.amazonaws.com/efa: 16
+                limits:
+                  nvidia.com/gpu: "8"
+                  vpc.amazonaws.com/efa: 16
+              volumeMounts:
+              - name: shared-storage
+                mountPath: /mnt/shared_storage
+              - name: shared-memory
+                mountPath: /dev/shm
+              - name: canva-cloud-tls
+                mountPath: /var/run/secrets/canva.cloud/pki
+                readOnly: true
+              command:
+              - bash
+              - -c
+              - |
+                echo "=== Debug pod started ==="
+                echo "Hostname: $(hostname)"
+                echo "GPUs:"
+                nvidia-smi -L 2>/dev/null || echo "no nvidia-smi"
+                echo ""
+                echo "=== Testing S3 (boto3) ==="
+                python3 -c "
+                import boto3, os
+                s3 = boto3.client('s3', region_name='us-east-1')
+                bucket = 'core-cn-oss.canva.com'
+                prefix = 'dataset/Text2Image/BLIP3o-60k/'
+                resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=5)
+                for obj in resp.get('Contents', []):
+                    print(f'  {obj[\"Key\"]}  ({obj[\"Size\"] / 1024 / 1024:.1f} MB)')
+                print(f'S3 boto3 OK — found {resp[\"KeyCount\"]} objects')
+                " 2>&1 || echo "S3 boto3 FAILED"
+                echo ""
+                echo "=== Testing S3 (aws CLI) ==="
+                aws s3 ls s3://core-cn-oss.canva.com/dataset/Text2Image/BLIP3o-60k/ --region us-east-1 2>&1 | head -5
+                echo ""
+                echo "=== Pod ready, sleeping 2h ==="
+                echo "Run: arnold exec <job-name> -- bash"
+                sleep 7200

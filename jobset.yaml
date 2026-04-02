@@ -1,0 +1,167 @@
+# Custom K8s JobSet for PixelGen single-node training (torchrun, no Ray).
+#
+# Usage:
+#   cd ~/work/canva-master/design_generation_server/models/pixelgen/pixelgen_train
+#   arnold config set application_id core-cn
+#   FORCE_NO_BAZEL_REMOTE_EXECUTION=true arnold submit \
+#     -f config/jobset_1node.yaml \
+#     --job-name "pixelgen-jit-baseline-$RANDOM"
+
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: ${arnold_job_name}
+  labels:
+    kueue.x-k8s.io/queue-name: ${arnold_application_id}-default-queue
+    app.canva.k8s/application-id: ${arnold_application_id}
+spec:
+  ttlSecondsAfterFinished: 86400
+  successPolicy:
+    operator: All
+    targetReplicatedJobs: [workers]
+  failurePolicy:
+    maxRestarts: 0
+    rules:
+    - action: FailJobSet
+      targetReplicatedJobs: [workers]
+  replicatedJobs:
+  - name: workers
+    replicas: 1
+    template:
+      spec:
+        completionMode: Indexed
+        completions: 1
+        parallelism: 1
+        backoffLimit: 0
+        template:
+          spec:
+            runtimeClassName: nvidia
+            serviceAccountName: ${arnold_application_id}-model-trainer
+            restartPolicy: Never
+            subdomain: ${arnold_job_name}
+            volumes:
+            - name: shared-storage
+              persistentVolumeClaim:
+                claimName: pvc-efs-${arnold_application_id}-anyscale
+            - name: shared-memory
+              emptyDir:
+                medium: Memory
+                sizeLimit: 1024Gi
+            - name: canva-cloud-tls
+              secret:
+                secretName: ${arnold_application_id}-model-trainer-tls
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: karpenter.sh/capacity-type
+                      operator: In
+                      values:
+                      - reserved
+                    - key: node.canva.k8s/dedicated
+                      operator: In
+                      values:
+                      - ${ARNOLD_NODEPOOL_NAME,ai-efa-accelerated}
+                    - key: karpenter.k8s.aws/instance-gpu-name
+                      operator: In
+                      values:
+                      - h200
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app.canva.k8s/component-type: ml-trainer
+            tolerations:
+            - effect: NoSchedule
+              key: dedicated
+              operator: Equal
+              value: ${ARNOLD_NODEPOOL_NAME,ai-efa-accelerated}
+            containers:
+            - name: trainer
+              image: ${arnold_docker_build:ds-core-cn-omra-trainer,.,Dockerfile,deploy_core-cn-readwrite}
+              env:
+              - name: PYTHONPATH
+                value: /app
+              - name: CANVA_FLAVOR
+                value: ${CANVA_FLAVOR,prod}
+              - name: CANVA_PLATFORM
+                value: eks
+              - name: CANVA_JOBSET_NAME
+                value: ${arnold_job_name}
+              - name: NNODES
+                value: "1"
+              - name: NGPUS_PER_NODE
+                value: "8"
+              - name: REPLICATED_JOB_NAME
+                value: "workers"
+              - name: CANVA_POD_NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+              - name: NCCL_TIMEOUT
+                value: "7200"
+              - name: TORCH_DISTRIBUTED_TIMEOUT
+                value: "7200"
+              - name: NCCL_DEBUG
+                value: INFO
+              - name: NCCL_DEBUG_SUBSYS
+                value: INIT,NET
+              - name: WANDB_MODE
+                value: "offline"
+              - name: WANDB_DIR
+                value: /tmp/wandb
+              - name: TORCH_HOME
+                value: /mnt/shared_storage/pixelgen/model_cache/torch
+              - name: HF_HOME
+                value: /mnt/shared_storage/pixelgen/model_cache/hf_home
+              - name: TRANSFORMERS_CACHE
+                value: /mnt/shared_storage/pixelgen/model_cache/transformers
+              - name: AWS_DEFAULT_REGION
+                value: us-east-1
+              - name: AWS_REGION
+                value: us-east-1
+              - name: TRAINER_WORKFLOW_ID
+                value: ${arnold_job_name}
+              - name: ML_WORKFLOW_ID
+                value: ${arnold_job_name}
+              - name: FI_PROVIDER
+                value: efa
+              - name: FI_EFA_USE_DEVICE_RDMA
+                value: "1"
+              - name: FI_EFA_FORK_SAFE
+                value: "1"
+              - name: CANVA_POD_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
+              resources:
+                requests:
+                  cpu: "154"
+                  memory: 1638Gi
+                  nvidia.com/gpu: "8"
+                  vpc.amazonaws.com/efa: 16
+                limits:
+                  nvidia.com/gpu: "8"
+                  vpc.amazonaws.com/efa: 16
+              volumeMounts:
+              - name: shared-storage
+                mountPath: /mnt/shared_storage
+              - name: shared-memory
+                mountPath: /dev/shm
+              - name: canva-cloud-tls
+                mountPath: /var/run/secrets/canva.cloud/pki
+                readOnly: true
+              command:
+              - bash
+              - -c
+              - |
+                cd /app
+                exec python main.py fit \
+                  -c ./configs_t2i/pretraining_res256_selfflow.yaml \
+                  --trainer.default_root_dir=/mnt/shared_storage/pixelgen/workdirs \
+                  --torch_hub_dir=/mnt/shared_storage/pixelgen/model_cache/torch \
+                  --huggingface_cache_dir=/mnt/shared_storage/pixelgen/model_cache/hf_home \
+                  --model.diffusion_trainer.init_args.encoder.init_args.weight_path=/mnt/shared_storage/pixelgen/model_cache/torch/checkpoints/dinov2_vitb14_pretrain.pth \
+                  --data.train_dataset.init_args.urls=[s3://core-cn-oss.canva.com/dataset/Text2Image/BLIP3o-60k/]
