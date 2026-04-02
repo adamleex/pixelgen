@@ -26,8 +26,9 @@ trainer:
   max_steps: 200000
   gradient_clip_val: 1.0
   gradient_clip_algorithm: norm
-  val_check_interval: 20000
+  val_check_interval: null
   check_val_every_n_epoch: null
+  limit_val_batches: 0
   log_every_n_steps: 50
   deterministic: null
   inference_mode: true
@@ -121,24 +122,6 @@ data:
       shuffle_buffer: 1000
       sample_shuffle: true
       repeat: true
-  eval_dataset:
-    class_path: src.data.dataset.geneval.GenEvalDataset
-    init_args:
-      meta_json_path: ./evaluations/geneval/evaluation_metadata.jsonl
-      num_samples_per_instance: 4
-      latent_shape:
-        - 3
-        - 256
-        - 256
-  pred_dataset:
-    class_path: src.data.dataset.geneval.GenEvalDataset
-    init_args:
-      meta_json_path: ./evaluations/geneval/evaluation_metadata.jsonl
-      num_samples_per_instance: 4
-      latent_shape:
-        - 3
-        - 256
-        - 256
   train_batch_size: 64
   train_num_workers: 4
   train_prefetch_factor: 2
