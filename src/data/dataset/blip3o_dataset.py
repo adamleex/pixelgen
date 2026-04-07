@@ -296,24 +296,23 @@ class WebDatasetPackedDataset(IterableDataset):
         Creates the data loading pipeline using webdataset.
         This pipeline is optimized for performance in a multi-worker setup.
         """
-        # `resampled=self.repeat` is a robust way to handle repeating datasets
-        # and shuffling the order of shards for each epoch.
         handler = wds.warn_and_continue
-        dataset = wds.DataPipeline(
+
+        stages = [
             wds.SimpleShardList(self.urls),
-            # at this point we have an iterator over all the shards
-            # this shuffles the shards
             wds.shuffle(100),
-            # add wds.split_by_node here if you are using multiple nodes
+            wds.split_by_node,
             wds.split_by_worker,
-            # at this point, we have an iterator over the shards assigned to each worker
             wds.tarfile_to_samples(),
-            # this shuffles the samples in memory
             wds.shuffle(self.shuffle_buffer),
-            # this decodes the images and json
             wds.decode("pil", handler=handler),
-        )
-                    
+        ]
+
+        if self.repeat:
+            dataset = wds.DataPipeline(*stages).repeat()
+        else:
+            dataset = wds.DataPipeline(*stages)
+
         return dataset
 
     def __iter__(self):

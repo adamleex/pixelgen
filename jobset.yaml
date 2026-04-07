@@ -1,7 +1,7 @@
 # Custom K8s JobSet for PixelGen single-node training (torchrun, no Ray).
 #
 # Usage:
-#   cd ~/work/canva-master/design_generation_server/models/pixelgen/pixelgen_train
+#   cd PixelGen_sf
 #   arnold config set application_id core-cn
 #   FORCE_NO_BAZEL_REMOTE_EXECUTION=true arnold submit \
 #     -f config/jobset_1node.yaml \
@@ -157,6 +157,9 @@ spec:
               - bash
               - -c
               - |
+                export NCCL_DEBUG=INFO
+                export NCCL_DEBUG_SUBSYS=ALL
+                export TORCH_NCCL_TRACE_BUFFER_SIZE=1000
                 cd /app
                 exec python main.py fit \
                   -c ./configs_t2i/pretraining_res256_selfflow.yaml \
